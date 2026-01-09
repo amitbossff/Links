@@ -7,9 +7,8 @@ from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_ID = -1002822914255
 
-# ⚠️ Own use ke liye simple global state
+# Simple global state (own use)
 saved_text = ""
 waiting_for_links = False
 link_dict = {}
@@ -19,7 +18,7 @@ async def save_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global saved_text, waiting_for_links
 
     msg = update.message
-    if not msg or msg.chat_id != GROUP_ID:
+    if not msg:
         return
 
     if not msg.reply_to_message or not msg.reply_to_message.text:
@@ -38,10 +37,10 @@ async def process_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     msg = update.message
-    if not msg or msg.chat_id != GROUP_ID:
+    if not msg or not msg.text:
         return
 
-    if not re.search(r'https?://|deleted', msg.text or ''):
+    if not re.search(r'https?://|deleted', msg.text):
         return
 
     link_dict.clear()
@@ -79,7 +78,7 @@ async def process_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
             i += 1
 
     await context.bot.send_message(
-        chat_id=GROUP_ID,
+        chat_id=msg.chat_id,
         text="\n".join(out),
         parse_mode="Markdown"
     )
@@ -108,6 +107,11 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_links))
 
 # ========== VERCEL HANDLER ==========
 class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
     def do_POST(self):
         length = int(self.headers.get("content-length", 0))
         body = self.rfile.read(length)
