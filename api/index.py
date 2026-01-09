@@ -1,19 +1,15 @@
 import os
 import re
-from telegram import Update
-from telegram.ext import (
-    Application,
-    ContextTypes,
-    MessageHandler,
-    filters
-)
-from http.server import BaseHTTPRequestHandler
 import json
 import asyncio
+from telegram import Update
+from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = -1002822914255
 
+# ⚠️ Own use ke liye simple global state
 saved_text = ""
 waiting_for_links = False
 link_dict = {}
@@ -22,74 +18,69 @@ link_dict = {}
 async def save_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global saved_text, waiting_for_links
 
-    message = update.message
-    if message.chat_id != GROUP_ID:
+    msg = update.message
+    if not msg or msg.chat_id != GROUP_ID:
         return
 
-    if not message.reply_to_message or not message.reply_to_message.text:
-        await message.reply_text("❌ Reply to a message with `.l`")
+    if not msg.reply_to_message or not msg.reply_to_message.text:
+        await msg.reply_text("❌ Reply to a message with `.l`")
         return
 
-    saved_text = message.reply_to_message.text.strip()
+    saved_text = msg.reply_to_message.text.strip()
     waiting_for_links = True
-    await message.reply_text("📎 Send links (digit + link)")
+    await msg.reply_text("📎 Send links (digit + link)")
 
-# ========== LINK PROCESS ==========
+# ========== LINKS ==========
 async def process_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global waiting_for_links, saved_text, link_dict
 
     if not waiting_for_links:
         return
 
-    message = update.message
-    if message.chat_id != GROUP_ID:
+    msg = update.message
+    if not msg or msg.chat_id != GROUP_ID:
         return
 
-    if not re.search(r'https?://|deleted', message.text or ''):
+    if not re.search(r'https?://|deleted', msg.text or ''):
         return
 
     link_dict.clear()
-
-    for line in message.text.splitlines():
+    for line in msg.text.splitlines():
         try:
-            digit, link = line.split(maxsplit=1)
-            if digit.isdigit():
-                link_dict[digit] = link.strip()
+            d, l = line.split(maxsplit=1)
+            if d.isdigit():
+                link_dict[d] = l.strip()
         except:
             pass
 
-    final_lines = []
+    out = []
     lines = saved_text.splitlines()
     i = 0
 
-    while i < len(lines):
-        name_line = lines[i].strip()
-        if not name_line:
-            i += 1
-            continue
+    while i < len(lines) - 1:
+        name = lines[i].strip()
+        num = lines[i + 1].strip()
 
-        digit_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        if num.isdigit():
+            name = name.replace("✅", "☑️")
+            out.append(f"*{name}*")
 
-        if digit_line.isdigit():
-            name_line = name_line.replace("✅", "☑️")
-            final_lines.append(f"*{name_line}*")
-
-            link = link_dict.get(digit_line)
+            link = link_dict.get(num)
             if not link:
-                final_lines.append(digit_line)
+                out.append(num)
             elif link.lower() == "deleted":
-                final_lines.append("❌")
+                out.append("❌")
             else:
-                final_lines.append(link)
+                out.append(link)
 
-            final_lines.append("")
+            out.append("")
             i += 2
         else:
             i += 1
 
     await context.bot.send_message(
         chat_id=GROUP_ID,
-        text="\n".join(final_lines),
+        text="\n".join(out),
         parse_mode="Markdown"
     )
 
@@ -97,36 +88,31 @@ async def process_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== .p ==========
 async def list_formatter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-
-    if not message.reply_to_message or not message.reply_to_message.text:
-        await message.reply_text("❌ Kisi list ko reply karke .p use karo")
+    msg = update.message
+    if not msg or not msg.reply_to_message or not msg.reply_to_message.text:
+        await msg.reply_text("❌ Kisi list ko reply karke .p use karo")
         return
 
-    output = []
-    for line in message.reply_to_message.text.splitlines():
-        line = re.sub(r"^0([1-9])\.", r"\1", line)
-        line = re.sub(r"^(\d+)\.", r"\1", line)
-        output.append(line.strip())
+    res = []
+    for line in msg.reply_to_message.text.splitlines():
+        line = re.sub(r"^0?(\d+)\.", r"\1", line)
+        res.append(line.strip())
 
-    await message.reply_text("\n".join(output))
+    await msg.reply_text("\n".join(res))
 
-
-# ========== TELEGRAM APP ==========
+# ========== APP ==========
 app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(MessageHandler(filters.Regex(r'^\.l$'), save_post))
 app.add_handler(MessageHandler(filters.Regex(r'^\.p$'), list_formatter))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_links))
 
-
 # ========== VERCEL HANDLER ==========
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        length = int(self.headers['Content-Length'])
+        length = int(self.headers.get("content-length", 0))
         body = self.rfile.read(length)
 
         update = Update.de_json(json.loads(body), app.bot)
-
         asyncio.run(app.process_update(update))
 
         self.send_response(200)
