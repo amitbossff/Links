@@ -1,124 +1,94 @@
 import os
-import re
 import json
-import asyncio
-from telegram import Update
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+import re
+import requests
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# Simple global state (own use)
 saved_text = ""
 waiting_for_links = False
 link_dict = {}
 
-# ========== .l ==========
-async def save_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global saved_text, waiting_for_links
+def send_message(chat_id, text):
+    requests.post(f"{API_URL}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    })
 
-    msg = update.message
-    if not msg:
-        return
-
-    if not msg.reply_to_message or not msg.reply_to_message.text:
-        await msg.reply_text("❌ Reply to a message with `.l`")
-        return
-
-    saved_text = msg.reply_to_message.text.strip()
-    waiting_for_links = True
-    await msg.reply_text("📎 Send links (digit + link)")
-
-# ========== LINKS ==========
-async def process_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global waiting_for_links, saved_text, link_dict
-
-    if not waiting_for_links:
-        return
-
-    msg = update.message
-    if not msg or not msg.text:
-        return
-
-    if not re.search(r'https?://|deleted', msg.text):
-        return
-
-    link_dict.clear()
-    for line in msg.text.splitlines():
-        try:
-            d, l = line.split(maxsplit=1)
-            if d.isdigit():
-                link_dict[d] = l.strip()
-        except:
-            pass
-
-    out = []
-    lines = saved_text.splitlines()
-    i = 0
-
-    while i < len(lines) - 1:
-        name = lines[i].strip()
-        num = lines[i + 1].strip()
-
-        if num.isdigit():
-            name = name.replace("✅", "☑️")
-            out.append(f"*{name}*")
-
-            link = link_dict.get(num)
-            if not link:
-                out.append(num)
-            elif link.lower() == "deleted":
-                out.append("❌")
-            else:
-                out.append(link)
-
-            out.append("")
-            i += 2
-        else:
-            i += 1
-
-    await context.bot.send_message(
-        chat_id=msg.chat_id,
-        text="\n".join(out),
-        parse_mode="Markdown"
-    )
-
-    waiting_for_links = False
-
-# ========== .p ==========
-async def list_formatter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    if not msg or not msg.reply_to_message or not msg.reply_to_message.text:
-        await msg.reply_text("❌ Kisi list ko reply karke .p use karo")
-        return
-
-    res = []
-    for line in msg.reply_to_message.text.splitlines():
-        line = re.sub(r"^0?(\d+)\.", r"\1", line)
-        res.append(line.strip())
-
-    await msg.reply_text("\n".join(res))
-
-# ========== APP ==========
-app = Application.builder().token(BOT_TOKEN).build()
-app.add_handler(MessageHandler(filters.Regex(r'^\.l$'), save_post))
-app.add_handler(MessageHandler(filters.Regex(r'^\.p$'), list_formatter))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_links))
-
-# ========== VERCEL HANDLER ==========
 class handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        global saved_text, waiting_for_links, link_dict
+
+        length = int(self.headers.get("content-length", 0))
+        body = json.loads(self.rfile.read(length))
+
+        message = body.get("message")
+        if not message:
+            self.send_response(200)
+            self.end_headers()
+            return
+
+        chat_id = message["chat"]["id"]
+        text = message.get("text", "")
+
+        # .l command
+        if text == ".l":
+            reply = message.get("reply_to_message")
+            if not reply or not reply.get("text"):
+                send_message(chat_id, "❌ Reply to a message with `.l`")
+            else:
+                saved_text = reply["text"]
+                waiting_for_links = True
+                send_message(chat_id, "📎 Send links (digit + link)")
+
+        # links
+        elif waiting_for_links and re.search(r"https?://|deleted", text):
+            link_dict.clear()
+            for line in text.splitlines():
+                try:
+                    d, l = line.split(maxsplit=1)
+                    if d.isdigit():
+                        link_dict[d] = l
+                except:
+                    pass
+
+            out = []
+            lines = saved_text.splitlines()
+            i = 0
+
+            while i < len(lines) - 1:
+                name = lines[i].replace("✅", "☑️")
+                num = lines[i + 1].strip()
+
+                if num.isdigit():
+                    out.append(f"*{name}*")
+                    link = link_dict.get(num, num)
+                    out.append("❌" if link == "deleted" else link)
+                    out.append("")
+                    i += 2
+                else:
+                    i += 1
+
+            send_message(chat_id, "\n".join(out))
+            waiting_for_links = False
+
+        # .p command
+        elif text == ".p":
+            reply = message.get("reply_to_message")
+            if reply and reply.get("text"):
+                res = []
+                for line in reply["text"].splitlines():
+                    line = re.sub(r"^0?(\d+)\.", r"\1", line)
+                    res.append(line.strip())
+                send_message(chat_id, "\n".join(res))
+
+        self.send_response(200)
+        self.end_headers()
+
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is running")
-
-    def do_POST(self):
-        length = int(self.headers.get("content-length", 0))
-        body = self.rfile.read(length)
-
-        update = Update.de_json(json.loads(body), app.bot)
-        asyncio.run(app.process_update(update))
-
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
+        self.wfile.write(b"Bot running")
